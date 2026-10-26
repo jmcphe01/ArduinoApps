@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Activity Tracker</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: #111; color: #eee; }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    .card { background: #1c1c1c; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .predictions { display: flex; gap: 12px; }
+    .predictions div { flex: 1; text-align: center; }
+    .predictions .label { font-size: 12px; color: #888; text-transform: uppercase; }
+    .predictions .value { font-size: 20px; font-weight: bold; margin-top: 4px; }
+    .labels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+    button { font-size: 16px; padding: 14px; border-radius: 10px; border: none; cursor: pointer; }
+    button.record { background: #2a6; color: white; }
+    button.record.active { background: #c33; }
+    button.stop { background: #c33; color: white; width: 100%; margin-top: 8px; }
+    button.train { background: #36c; color: white; width: 100%; }
+    #status-line { font-size: 13px; color: #999; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Activity Tracker</h1>
+  <div id="status-line">connecting...</div>
+
+  <div class="card">
+    <div class="predictions">
+      <div>
+        <div class="label">Model 1 (one axis)</div>
+        <div class="value" id="prediction1">-</div>
+      </div>
+      <div>
+        <div class="label">Model 2 (full IMU, KNN)</div>
+        <div class="value" id="prediction2">-</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Calibration</div>
+    <div class="labels" id="label-buttons"></div>
+    <button class="stop" id="stop-btn">Stop Recording</button>
+    <div id="counts" style="margin-top:12px; font-size: 13px; color: #aaa;"></div>
+  </div>
+
+  <div class="card">
+    <button class="train" id="train-btn">Train Models</button>
+    <div id="train-result" style="margin-top: 8px; font-size: 13px; color: #aaa;"></div>
+  </div>
+
+<script>
+const labelButtonsEl = document.getElementById('label-buttons');
+const stopBtn = document.getElementById('stop-btn');
+const trainBtn = document.getElementById('train-btn');
+
+let labels = [];
+let currentRecordingLabel = null;
+
+async function api(method, path, query) {
+  // The server reads plain parameters (like label: str) as URL query
+  // parameters, not a JSON body - so build the query string ourselves.
+  const qs = query ? '?' + new URLSearchParams(query).toString() : '';
+  const res = await fetch(path + qs, { method });
+  return res.json();
+}
+
+function renderLabelButtons() {
+  labelButtonsEl.innerHTML = '';
+  for (const label of labels) {
+    const btn = document.createElement('button');
+    btn.className = 'record' + (label === currentRecordingLabel ? ' active' : '');
+    btn.textContent = 'Record ' + label;
+    btn.onclick = () => api('POST', '/start_recording', { label }).then(refresh);
+    labelButtonsEl.appendChild(btn);
+  }
+}
+
+stopBtn.onclick = () => api('POST', '/stop_recording').then(refresh);
+
+trainBtn.onclick = async () => {
+  const result = await api('POST', '/train');
+  const acc = result.loo_accuracy;
+  document.getElementById('train-result').textContent =
+    `Trained on ${result.rows} windows. Model 2 leave-one-out accuracy: ` +
+    (acc === null || acc === undefined ? 'n/a (need more data)' : (acc * 100).toFixed(0) + '%');
+};
+
+async function refresh() {
+  const s = await api('GET', '/status');
+  labels = s.labels;
+  currentRecordingLabel = s.recording ? s.recording_label : null;
+  renderLabelButtons();
+
+  document.getElementById('prediction1').textContent = s.prediction1;
+  document.getElementById('prediction2').textContent = s.prediction2;
+
+  const countsText = Object.entries(s.counts_by_label || {})
+    .map(([label, n]) => `${label}: ${n}`).join(' · ') || 'no calibration data yet';
+  document.getElementById('counts').textContent = countsText +
+    (s.recording ? ` (recording ${s.recording_label}, +${s.rows_recorded_this_session} this session)` : '');
+
+  document.getElementById('status-line').textContent =
+    s.connected ? 'connected to sketch' : 'not hearing from the sketch - check the MPU6050 wiring';
+}
+
+renderLabelButtons();
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
