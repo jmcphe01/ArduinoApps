@@ -133,6 +133,18 @@ def get_status():
     }
 
 
+def get_sample():
+    """Most recent raw accel+gyro reading, for the live graphs on the page.
+
+    Kept separate from get_status() so the page can poll it faster without
+    re-fetching the (slower-changing) calibration counts and predictions.
+    """
+    window = sampler.window()
+    if not window:
+        return {"connected": sampler.connected, "sample": None}
+    return {"connected": sampler.connected, "sample": list(window[-1])}
+
+
 def start_recording(label: str):
     if label not in LABELS:
         return {"ok": False, "error": f"unknown label '{label}'"}
@@ -152,6 +164,7 @@ def train():
 
 
 web_ui.expose_api("GET", "/status", get_status)
+web_ui.expose_api("GET", "/sample", get_sample)
 web_ui.expose_api("POST", "/start_recording", start_recording)
 web_ui.expose_api("POST", "/stop_recording", stop_recording)
 web_ui.expose_api("POST", "/train", train)

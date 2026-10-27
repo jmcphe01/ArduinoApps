@@ -19,6 +19,8 @@
     button.stop { background: #c33; color: white; width: 100%; margin-top: 8px; }
     button.train { background: #36c; color: white; width: 100%; }
     #status-line { font-size: 13px; color: #999; margin-top: 8px; }
+    .chart-legend { font-size: 11px; color: #888; margin-top: 6px; }
+    .chart-legend span { margin-right: 2px; }
   </style>
 </head>
 <body>
@@ -50,13 +52,104 @@
     <div id="train-result" style="margin-top: 8px; font-size: 13px; color: #aaa;"></div>
   </div>
 
+  <div class="card">
+    <div class="label">Live Acceleration (g)</div>
+    <canvas id="accel-chart" height="100" style="width:100%; height:100px; display:block;"></canvas>
+    <div class="chart-legend">
+      <span style="color:#e55">■</span> X
+      <span style="color:#5e5">■</span> Y
+      <span style="color:#59f">■</span> Z
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Live Gyro (deg/s)</div>
+    <canvas id="gyro-chart" height="100" style="width:100%; height:100px; display:block;"></canvas>
+    <div class="chart-legend">
+      <span style="color:#e55">■</span> X
+      <span style="color:#5e5">■</span> Y
+      <span style="color:#59f">■</span> Z
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Live Prediction</div>
+    <div class="chart-legend" style="margin-bottom:6px;">Model 1</div>
+    <canvas id="pred1-chart" height="24" style="width:100%; height:24px; display:block;"></canvas>
+    <div class="chart-legend" style="margin:10px 0 6px;">Model 2</div>
+    <canvas id="pred2-chart" height="24" style="width:100%; height:24px; display:block;"></canvas>
+  </div>
+
 <script>
 const labelButtonsEl = document.getElementById('label-buttons');
 const stopBtn = document.getElementById('stop-btn');
 const trainBtn = document.getElementById('train-btn');
+const accelCanvas = document.getElementById('accel-chart');
+const gyroCanvas = document.getElementById('gyro-chart');
+const pred1Canvas = document.getElementById('pred1-chart');
+const pred2Canvas = document.getElementById('pred2-chart');
 
 let labels = [];
 let currentRecordingLabel = null;
+
+// Rolling history for the live graphs. Accel/gyro are sampled faster than
+// predictions since the raw signal changes a lot quicker than the classifier
+// output does.
+const ACCEL_HISTORY_LEN = 100; // ~25s at the 250ms sample-poll rate below
+const PRED_HISTORY_LEN = 60;   // ~60s at the 1s status-poll rate
+let accelHistory = []; // each entry: [ax, ay, az]
+let gyroHistory = [];  // each entry: [gx, gy, gz]
+let pred1History = []; // label strings, oldest first
+let pred2History = [];
+
+const AXIS_COLORS = ['#e55', '#5e5', '#59f']; // x, y, z
+const LABEL_COLORS = { standing: '#666', walking: '#3a7bd5', running: '#e8742a', biking: '#2a6' };
+
+// Keep the canvas's backing pixel size in sync with its CSS width so the
+// lines stay crisp instead of stretched/blurry.
+function fitCanvasWidth(canvas) {
+  const cssWidth = Math.round(canvas.getBoundingClientRect().width);
+  if (cssWidth > 0 && canvas.width !== cssWidth) canvas.width = cssWidth;
+}
+
+function drawLineChart(canvas, seriesList, colors) {
+  fitCanvasWidth(canvas);
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const allValues = seriesList.flat();
+  if (allValues.length === 0) return;
+  let min = Math.min(...allValues), max = Math.max(...allValues);
+  if (max - min < 1e-6) { max += 0.5; min -= 0.5; } // avoid a flat, divide-by-zero chart
+  const pad = (max - min) * 0.1;
+  min -= pad; max += pad;
+
+  const toY = (v) => h - ((v - min) / (max - min)) * h;
+  seriesList.forEach((series, idx) => {
+    ctx.strokeStyle = colors[idx];
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    series.forEach((v, i) => {
+      const x = (i / Math.max(series.length - 1, 1)) * w;
+      const y = toY(v);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  });
+}
+
+function drawPredictionStrip(canvas, history) {
+  fitCanvasWidth(canvas);
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const barWidth = w / PRED_HISTORY_LEN;
+  history.forEach((label, i) => {
+    ctx.fillStyle = LABEL_COLORS[label] || '#333';
+    ctx.fillRect(i * barWidth, 0, Math.ceil(barWidth) + 1, h);
+  });
+}
 
 async function api(method, path, query) {
   // The server reads plain parameters (like label: str) as URL query
@@ -96,6 +189,13 @@ async function refresh() {
   document.getElementById('prediction1').textContent = s.prediction1;
   document.getElementById('prediction2').textContent = s.prediction2;
 
+  pred1History.push(s.prediction1);
+  pred2History.push(s.prediction2);
+  if (pred1History.length > PRED_HISTORY_LEN) pred1History.shift();
+  if (pred2History.length > PRED_HISTORY_LEN) pred2History.shift();
+  drawPredictionStrip(pred1Canvas, pred1History);
+  drawPredictionStrip(pred2Canvas, pred2History);
+
   const countsText = Object.entries(s.counts_by_label || {})
     .map(([label, n]) => `${label}: ${n}`).join(' · ') || 'no calibration data yet';
   document.getElementById('counts').textContent = countsText +
@@ -105,9 +205,27 @@ async function refresh() {
     s.connected ? 'connected to sketch' : 'not hearing from the sketch - check the MPU6050 wiring';
 }
 
+async function pollSample() {
+  try {
+    const s = await api('GET', '/sample');
+    if (!s.sample) return;
+    const [ax, ay, az, gx, gy, gz] = s.sample;
+    accelHistory.push([ax, ay, az]);
+    gyroHistory.push([gx, gy, gz]);
+    if (accelHistory.length > ACCEL_HISTORY_LEN) accelHistory.shift();
+    if (gyroHistory.length > ACCEL_HISTORY_LEN) gyroHistory.shift();
+    drawLineChart(accelCanvas, [0, 1, 2].map((k) => accelHistory.map((p) => p[k])), AXIS_COLORS);
+    drawLineChart(gyroCanvas, [0, 1, 2].map((k) => gyroHistory.map((p) => p[k])), AXIS_COLORS);
+  } catch (e) {
+    // Transient fetch error - the next poll will try again.
+  }
+}
+
 renderLabelButtons();
 refresh();
+pollSample();
 setInterval(refresh, 1000);
+setInterval(pollSample, 250);
 </script>
 </body>
 </html>
