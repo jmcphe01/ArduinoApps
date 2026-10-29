@@ -19,6 +19,8 @@
     button.stop { background: #c33; color: white; width: 100%; margin-top: 8px; }
     button.train { background: #36c; color: white; width: 100%; }
     button.erase { background: #900; color: white; width: 100%; }
+    button.reset-steps { background: #555; color: white; width: 100%; margin-top: 10px; }
+    .step-count { font-size: 48px; font-weight: bold; text-align: center; }
     #status-line { font-size: 13px; color: #999; margin-top: 8px; }
     .chart-legend { font-size: 11px; color: #888; margin-top: 6px; }
     .chart-legend span { margin-right: 2px; }
@@ -39,6 +41,24 @@
         <div class="value" id="prediction2">-</div>
       </div>
     </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Steps (neural net)</div>
+    <div class="step-count" id="step-count">0</div>
+    <button class="reset-steps" id="reset-steps-btn">Reset Step Count</button>
+  </div>
+
+  <div class="card">
+    <div class="label">Step Training Data</div>
+    <div class="labels">
+      <button class="record" id="record-step-btn">Record Steps</button>
+      <button class="record" id="record-nonstep-btn">Record Non-Step Motion</button>
+    </div>
+    <button class="stop" id="step-stop-btn">Stop Recording</button>
+    <div id="step-record-status" style="margin-top:12px; font-size: 13px; color: #aaa;"></div>
+    <button class="train" id="retrain-steps-btn" style="margin-top: 12px;">Retrain Step Net</button>
+    <div id="retrain-result" style="margin-top: 8px; font-size: 13px; color: #aaa;"></div>
   </div>
 
   <div class="card">
@@ -91,6 +111,11 @@ const labelButtonsEl = document.getElementById('label-buttons');
 const stopBtn = document.getElementById('stop-btn');
 const trainBtn = document.getElementById('train-btn');
 const eraseBtn = document.getElementById('erase-btn');
+const resetStepsBtn = document.getElementById('reset-steps-btn');
+const recordStepBtn = document.getElementById('record-step-btn');
+const recordNonstepBtn = document.getElementById('record-nonstep-btn');
+const stepStopBtn = document.getElementById('step-stop-btn');
+const retrainStepsBtn = document.getElementById('retrain-steps-btn');
 const accelCanvas = document.getElementById('accel-chart');
 const gyroCanvas = document.getElementById('gyro-chart');
 const pred1Canvas = document.getElementById('pred1-chart');
@@ -195,6 +220,25 @@ eraseBtn.onclick = async () => {
   refresh();
 };
 
+resetStepsBtn.onclick = () => api('POST', '/reset_steps').then(refresh);
+
+recordStepBtn.onclick = () => api('POST', '/start_step_recording').then(refresh);
+recordNonstepBtn.onclick = () => api('POST', '/start_nonstep_recording').then(refresh);
+stepStopBtn.onclick = () => api('POST', '/stop_recording').then(refresh);
+
+retrainStepsBtn.onclick = async () => {
+  const resultEl = document.getElementById('retrain-result');
+  resultEl.textContent = 'Training...';
+  const result = await api('POST', '/retrain_step_net');
+  if (!result.ok) {
+    resultEl.textContent = 'Could not retrain: ' + result.error;
+    return;
+  }
+  const acc = result.holdout_accuracy;
+  resultEl.textContent = `Retrained on ${result.candidates} candidate peaks. ` +
+    `Holdout accuracy: ` + (acc === null || acc === undefined ? 'n/a (need more data)' : (acc * 100).toFixed(0) + '%');
+};
+
 async function refresh() {
   const s = await api('GET', '/status');
   labels = s.labels;
@@ -203,6 +247,8 @@ async function refresh() {
 
   document.getElementById('prediction1').textContent = s.prediction1;
   document.getElementById('prediction2').textContent = s.prediction2;
+  document.getElementById('step-count').textContent =
+    s.step_net_loaded ? s.step_count : 'step net not loaded';
 
   pred1History.push(s.prediction1);
   pred2History.push(s.prediction2);
@@ -215,6 +261,12 @@ async function refresh() {
     .map(([label, n]) => `${label}: ${n}`).join(' · ') || 'no calibration data yet';
   document.getElementById('counts').textContent = countsText +
     (s.recording ? ` (recording ${s.recording_label}, +${s.rows_recorded_this_session} this session)` : '');
+
+  const stepRecordingActive = s.recording && (s.recording_label === 'step' || s.recording_label === 'non_step');
+  recordStepBtn.className = 'record' + (s.recording_label === 'step' ? ' active' : '');
+  recordNonstepBtn.className = 'record' + (s.recording_label === 'non_step' ? ' active' : '');
+  document.getElementById('step-record-status').textContent =
+    stepRecordingActive ? `recording ${s.recording_label} (raw trace only, no feature snapshot)` : '';
 
   document.getElementById('status-line').textContent =
     s.connected ? 'connected to sketch' : 'not hearing from the sketch - check the MPU6050 wiring';

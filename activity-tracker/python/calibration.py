@@ -10,11 +10,18 @@ from features import extract_features, single_axis_peaks, FEATURE_KEYS
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 CSV_PATH = DATA_DIR / "calibration.csv"
+RAW_LOG_PATH = DATA_DIR / "raw_imu_log.csv"
 
 PEAK_KEYS = ["peak_ax", "peak_ay", "peak_az"]
 CSV_FIELDS = ["label"] + PEAK_KEYS + FEATURE_KEYS
+RAW_FIELDS = ["t", "label", "ax", "ay", "az", "gx", "gy", "gz"]
 
-RECORD_INTERVAL_SECONDS = 0.5  # one labeled window saved this often while recording
+RECORD_INTERVAL_SECONDS = 0.5  # one labeled feature snapshot saved this often while recording
+RAW_INTERVAL_SECONDS = 0.05    # ~20 Hz raw trace - plenty for step peaks (humans step at ~1-3 Hz)
+
+# These two labels are for the step counter only, not Model 1/2 - recording
+# them skips the feature-snapshot write below and only logs the raw trace.
+STEP_ONLY_LABELS = {"step", "non_step"}
 
 
 class CalibrationManager:
@@ -60,22 +67,52 @@ class CalibrationManager:
         self.recording_label = None
 
     def _record_loop(self):
-        file_is_new = not CSV_PATH.exists()
-        with open(CSV_PATH, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-            if file_is_new:
-                writer.writeheader()
+        """Writes two things while recording, at two different rates:
 
+        - calibration.csv: a labeled feature snapshot every RECORD_INTERVAL_SECONDS,
+          used to train Model 1 / Model 2 (unchanged from before).
+        - raw_imu_log.csv: the single latest raw sample every RAW_INTERVAL_SECONDS
+          (~20 Hz), used later to find individual step peaks in the waveform - a
+          feature snapshot only summarizes a whole window, so it can't tell us
+          where in time a step happened, but the raw trace can.
+        """
+        csv_is_new = not CSV_PATH.exists()
+        raw_is_new = not RAW_LOG_PATH.exists()
+        start_time = time.time()
+        with open(CSV_PATH, "a", newline="") as f, open(RAW_LOG_PATH, "a", newline="") as rf:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            if csv_is_new:
+                writer.writeheader()
+            raw_writer = csv.DictWriter(rf, fieldnames=RAW_FIELDS)
+            if raw_is_new:
+                raw_writer.writeheader()
+
+            last_feature_write = 0.0
             while not self._stop_event.is_set():
                 window = self.sampler.window()
-                if len(window) >= self.window_size:
+
+                if window:
+                    ax, ay, az, gx, gy, gz = window[-1]
+                    raw_writer.writerow({
+                        "t": round(time.time() - start_time, 3),
+                        "label": self.recording_label,
+                        "ax": ax, "ay": ay, "az": az, "gx": gx, "gy": gy, "gz": gz,
+                    })
+                    rf.flush()
+
+                now = time.time()
+                if (self.recording_label not in STEP_ONLY_LABELS
+                        and len(window) >= self.window_size
+                        and now - last_feature_write >= RECORD_INTERVAL_SECONDS):
                     row = {"label": self.recording_label}
                     row.update(single_axis_peaks(window))
                     row.update(extract_features(window))
                     writer.writerow(row)
                     f.flush()
                     self.rows_recorded_this_session += 1
-                time.sleep(RECORD_INTERVAL_SECONDS)
+                    last_feature_write = now
+
+                time.sleep(RAW_INTERVAL_SECONDS)
 
     def load_rows(self):
         """Loads calibration rows, skipping any that are malformed.
