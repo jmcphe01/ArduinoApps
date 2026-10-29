@@ -56,6 +56,11 @@ class Model1Threshold:
         idx = sum(1 for t in self.thresholds if value > t)
         return self.class_order[idx]
 
+    def reset(self):
+        self.axis_key = "peak_az"
+        self.class_order = []
+        self.thresholds = []
+
 
 class Model2KNN:
     """k-nearest-neighbors over all 6 IMU channels' features.
@@ -117,3 +122,9 @@ class Model2KNN:
             if prediction == self.y[i]:
                 correct += 1
         return correct / len(self.y)
+
+    def reset(self):
+        self.X = None
+        self.y = None
+        self.mean = None
+        self.std = None

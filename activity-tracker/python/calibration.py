@@ -107,6 +107,15 @@ class CalibrationManager:
         self.model2.train(rows)
         return len(rows)
 
+    def erase(self):
+        """Deletes all recorded calibration data and untrains both models."""
+        if self.is_recording:
+            self.stop_recording()
+        if CSV_PATH.exists():
+            CSV_PATH.unlink()
+        self.model1.reset()
+        self.model2.reset()
+
     def counts_by_label(self):
         counts = {}
         for r in self.load_rows():

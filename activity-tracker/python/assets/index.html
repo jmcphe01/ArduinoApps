@@ -18,6 +18,7 @@
     button.record.active { background: #c33; }
     button.stop { background: #c33; color: white; width: 100%; margin-top: 8px; }
     button.train { background: #36c; color: white; width: 100%; }
+    button.erase { background: #900; color: white; width: 100%; }
     #status-line { font-size: 13px; color: #999; margin-top: 8px; }
     .chart-legend { font-size: 11px; color: #888; margin-top: 6px; }
     .chart-legend span { margin-right: 2px; }
@@ -53,6 +54,11 @@
   </div>
 
   <div class="card">
+    <button class="erase" id="erase-btn">Erase All Training Data</button>
+    <div id="erase-result" style="margin-top: 8px; font-size: 13px; color: #aaa;"></div>
+  </div>
+
+  <div class="card">
     <div class="label">Live Acceleration (g)</div>
     <canvas id="accel-chart" height="100" style="width:100%; height:100px; display:block;"></canvas>
     <div class="chart-legend">
@@ -84,6 +90,7 @@
 const labelButtonsEl = document.getElementById('label-buttons');
 const stopBtn = document.getElementById('stop-btn');
 const trainBtn = document.getElementById('train-btn');
+const eraseBtn = document.getElementById('erase-btn');
 const accelCanvas = document.getElementById('accel-chart');
 const gyroCanvas = document.getElementById('gyro-chart');
 const pred1Canvas = document.getElementById('pred1-chart');
@@ -178,6 +185,14 @@ trainBtn.onclick = async () => {
   document.getElementById('train-result').textContent =
     `Trained on ${result.rows} windows. Model 2 leave-one-out accuracy: ` +
     (acc === null || acc === undefined ? 'n/a (need more data)' : (acc * 100).toFixed(0) + '%');
+};
+
+eraseBtn.onclick = async () => {
+  if (!confirm('Erase ALL recorded training data and untrain both models? This cannot be undone.')) return;
+  await api('POST', '/erase_calibration');
+  document.getElementById('train-result').textContent = '';
+  document.getElementById('erase-result').textContent = 'Training data erased.';
+  refresh();
 };
 
 async function refresh() {

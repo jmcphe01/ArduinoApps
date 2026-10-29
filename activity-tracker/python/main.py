@@ -163,11 +163,20 @@ def train():
     return {"ok": True, "rows": n_rows, "loo_accuracy": state["loo_accuracy"]}
 
 
+def erase_calibration():
+    calib.erase()
+    state["prediction1"] = "collecting data..."
+    state["prediction2"] = "collecting data..."
+    state["loo_accuracy"] = None
+    return {"ok": True}
+
+
 web_ui.expose_api("GET", "/status", get_status)
 web_ui.expose_api("GET", "/sample", get_sample)
 web_ui.expose_api("POST", "/start_recording", start_recording)
 web_ui.expose_api("POST", "/stop_recording", stop_recording)
 web_ui.expose_api("POST", "/train", train)
+web_ui.expose_api("POST", "/erase_calibration", erase_calibration)
 
 # WebUI is itself a brick (like ImuSampler and LiveClassifier above), so
 # App.run() starts its web server automatically - no manual web_ui.start().
