@@ -145,6 +145,9 @@ class StepCounter:
     def __init__(self):
         self.detector = StepPeakDetector(sample_hz=SAMPLE_HZ)
         self.count = 0
+        # Timestamps (time.time()) of recently counted steps, so the page can
+        # draw a marker at the right spot on the live accel/gyro graphs.
+        self.recent_step_times = deque(maxlen=50)
 
     def loop(self):
         time.sleep(0.02)
@@ -154,10 +157,12 @@ class StepCounter:
             candidate = self.detector.feed(t, ax, ay, az, gx, gy, gz)
             if candidate is not None and step_net.is_step(candidate):
                 self.count += 1
+                self.recent_step_times.append(t)
 
     def reset(self):
         self.detector = StepPeakDetector(sample_hz=SAMPLE_HZ)
         self.count = 0
+        self.recent_step_times.clear()
 
 
 step_counter = StepCounter()
@@ -181,6 +186,7 @@ def get_status():
         "loo_accuracy": state["loo_accuracy"],
         "step_count": step_counter.count,
         "step_net_loaded": step_net is not None,
+        "step_times": list(step_counter.recent_step_times),
     }
 
 
@@ -192,8 +198,8 @@ def get_sample():
     """
     window = sampler.window()
     if not window:
-        return {"connected": sampler.connected, "sample": None}
-    return {"connected": sampler.connected, "sample": list(window[-1])}
+        return {"connected": sampler.connected, "sample": None, "t": None}
+    return {"connected": sampler.connected, "sample": list(window[-1]), "t": time.time()}
 
 
 def start_recording(label: str):
