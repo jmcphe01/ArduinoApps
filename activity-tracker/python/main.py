@@ -20,6 +20,7 @@ from steps import StepPeakDetector, STEP_FEATURE_KEYS
 from step_net_inference import StepNetInference
 from build_step_dataset import load_sessions, build_candidates, RAW_LOG_PATH
 import step_net_train_numpy as step_train
+import step_test_log
 
 logger = Logger("ActivityTracker")
 
@@ -310,6 +311,21 @@ def retrain_step_net():
 
 
 web_ui.expose_api("POST", "/retrain_step_net", retrain_step_net)
+
+
+def log_test_walk(actual: int):
+    """Call after a test walk: compares the live step_count against the
+    actual number of steps you really took, and logs the trial."""
+    step_test_log.log_trial(step_counter.count, actual)
+    return {"ok": True, **step_test_log.summary()}
+
+
+def get_test_stats():
+    return step_test_log.summary()
+
+
+web_ui.expose_api("POST", "/log_test_walk", log_test_walk)
+web_ui.expose_api("GET", "/test_stats", get_test_stats)
 
 # WebUI is itself a brick (like ImuSampler and LiveClassifier above), so
 # App.run() starts its web server automatically - no manual web_ui.start().

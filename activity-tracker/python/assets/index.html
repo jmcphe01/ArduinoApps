@@ -80,6 +80,21 @@
   </div>
 
   <div class="card">
+    <div class="label">Test Walk (uncertainty analysis)</div>
+    <div style="font-size: 13px; color: #aaa; margin-bottom: 10px;">
+      Reset the step count, walk a known number of steps while counting
+      them yourself, then enter that number below. Logs predicted vs.
+      actual so the error stats are computed from real trials.
+    </div>
+    <div style="display:flex; gap:8px;">
+      <input type="number" id="actual-steps-input" placeholder="Actual steps taken"
+        style="flex:1; font-size:16px; padding:12px; border-radius:10px; border:none; background:#2a2a2a; color:#eee;">
+      <button class="train" id="log-test-btn" style="width:auto; padding-left:20px; padding-right:20px;">Log</button>
+    </div>
+    <div id="test-stats" style="margin-top:12px; font-size: 13px; color: #aaa;"></div>
+  </div>
+
+  <div class="card">
     <div class="label">Step Training Data</div>
     <div class="labels">
       <button class="record" id="record-step-btn">Record Steps</button>
@@ -118,6 +133,8 @@ const recordStepBtn = document.getElementById('record-step-btn');
 const recordNonstepBtn = document.getElementById('record-nonstep-btn');
 const stepStopBtn = document.getElementById('step-stop-btn');
 const retrainStepsBtn = document.getElementById('retrain-steps-btn');
+const logTestBtn = document.getElementById('log-test-btn');
+const actualStepsInput = document.getElementById('actual-steps-input');
 const accelCanvas = document.getElementById('accel-chart');
 const gyroCanvas = document.getElementById('gyro-chart');
 const pred1Canvas = document.getElementById('pred1-chart');
@@ -250,6 +267,32 @@ eraseBtn.onclick = async () => {
 
 resetStepsBtn.onclick = () => api('POST', '/reset_steps').then(refresh);
 
+function renderTestStats(stats) {
+  const el = document.getElementById('test-stats');
+  if (!stats.n_trials) {
+    el.textContent = 'No test walks logged yet.';
+    return;
+  }
+  const mae = stats.mean_abs_error.toFixed(1);
+  const pct = stats.mean_pct_error === null ? 'n/a' : stats.mean_pct_error.toFixed(1) + '%';
+  const recentLines = stats.recent_trials.map((t) =>
+    `predicted ${t.predicted}, actual ${t.actual} (error ${t.error >= 0 ? '+' : ''}${t.error})`
+  ).join('\n');
+  el.textContent = `${stats.n_trials} trial(s). Mean absolute error: ${mae} steps. Mean error: ${pct}.\n` + recentLines;
+  el.style.whiteSpace = 'pre-line';
+}
+
+logTestBtn.onclick = async () => {
+  const actual = parseInt(actualStepsInput.value, 10);
+  if (!Number.isFinite(actual) || actual < 0) {
+    alert('Enter the actual number of steps you took.');
+    return;
+  }
+  const result = await api('POST', '/log_test_walk', { actual });
+  renderTestStats(result);
+  actualStepsInput.value = '';
+};
+
 recordStepBtn.onclick = () => api('POST', '/start_step_recording').then(refresh);
 recordNonstepBtn.onclick = () => api('POST', '/start_nonstep_recording').then(refresh);
 stepStopBtn.onclick = () => api('POST', '/stop_recording').then(refresh);
@@ -322,6 +365,7 @@ async function pollSample() {
 renderLabelButtons();
 refresh();
 pollSample();
+api('GET', '/test_stats').then(renderTestStats);
 setInterval(refresh, 1000);
 setInterval(pollSample, 250);
 </script>

@@ -1,0 +1,593 @@
+<title>How StepNet Learns</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  /*
+    Layout: one full-bleed animated "scene" at a time, canvas-driven,
+    advanced manually or by autoplay - built to be screen-recorded.
+    Type: Space Grotesk (display) + Inter (body) + JetBrains Mono (numbers).
+    Color: blackboard dark with a cyan "forward" accent and an amber
+    "backward" accent (gradient/backprop), echoing a chalkboard math video.
+  */
+  :root {
+    --bg: #0a0e16;
+    --bg-raised: #10151f;
+    --ink: #e9edf5;
+    --ink-dim: #8793a8;
+    --rule: #232b3a;
+    --forward: #4fd1e8;
+    --backward: #f5a623;
+    --good: #5fd97a;
+    --bad: #f06a6a;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Inter', -apple-system, sans-serif;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    height: 100%;
+    overflow: hidden;
+  }
+  html { height: 100%; }
+  h1, h2, h3 { font-family: 'Space Grotesk', -apple-system, sans-serif; text-wrap: balance; margin: 0; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+  .stage {
+    max-width: 880px;
+    margin: 0 auto;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding-block: 18px;
+    gap: 14px;
+  }
+  .scene-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    background: var(--bg-raised);
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .scene-header {
+    padding: 18px 22px 0;
+    flex-shrink: 0;
+  }
+  .scene-eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin-bottom: 4px;
+  }
+  .scene-title { font-size: clamp(18px, 3.2vw, 26px); }
+  .scene-sub {
+    color: var(--ink-dim);
+    font-size: 14px;
+    max-width: 60ch;
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+  .canvas-area {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+  }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  button {
+    font-family: inherit;
+    font-size: 14px;
+    border: 1px solid var(--rule);
+    background: var(--bg-raised);
+    color: var(--ink);
+    border-radius: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--forward); }
+  button#playBtn { background: var(--forward); color: #04222b; border-color: var(--forward); font-weight: 600; min-width: 92px; }
+  .dots { display: flex; gap: 6px; margin-left: auto; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--rule); cursor: pointer; }
+  .dot.active { background: var(--forward); }
+  .step-label { font-size: 12px; color: var(--ink-dim); min-width: 52px; text-align: center; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--rule);
+    color: var(--ink-dim);
+  }
+  .pill.forward { color: var(--forward); border-color: var(--forward); }
+  .pill.backward { color: var(--backward); border-color: var(--backward); }
+</style>
+
+<div class="stage">
+  <div class="scene-wrap">
+    <div class="scene-header">
+      <div class="scene-eyebrow" id="eyebrow">Scene 1 / 6</div>
+      <h1 class="scene-title" id="title">How StepNet Learns</h1>
+      <div class="scene-sub" id="sub">A real PyTorch-trained neural net, built on an Arduino Uno Q, for telling a real footstep apart from a pedal stroke or a pivot.</div>
+    </div>
+    <div class="canvas-area"><canvas id="canvas"></canvas></div>
+  </div>
+  <div class="controls">
+    <button id="prevBtn">‹ Prev</button>
+    <button id="playBtn">▶ Play</button>
+    <button id="nextBtn">Next ›</button>
+    <span class="step-label" id="stepLabel">1 / 6</span>
+    <div class="dots" id="dots"></div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let dpr = Math.max(window.devicePixelRatio || 1, 1);
+
+function fit() {
+  const rect = canvas.getBoundingClientRect();
+  dpr = Math.max(window.devicePixelRatio || 1, 1);
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', fit);
+
+const COLORS = {
+  bg: '#10151f', ink: '#e9edf5', dim: '#8793a8', rule: '#232b3a',
+  forward: '#4fd1e8', backward: '#f5a623', good: '#5fd97a', bad: '#f06a6a',
+};
+
+function W() { return canvas.getBoundingClientRect().width; }
+function H() { return canvas.getBoundingClientRect().height; }
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+
+/* ---------------- Scene 1: the raw signal + peak detection ---------------- */
+function sceneSignal(t, dt) {
+  const w = W(), h = H(), pad = 36;
+  ctx.clearRect(0, 0, w, h);
+
+  // Synthetic accel-magnitude waveform: walking-like peaks with noise.
+  const n = 240;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const x = pad + (i / (n - 1)) * (w - pad * 2);
+    const phase = i * 0.17 - t * 1.4;
+    const walk = 1.0 + 0.55 * Math.max(0, Math.sin(phase)) ** 3;
+    const noise = (Math.sin(i * 12.9) * 0.04);
+    pts.push({ x, y: walk + noise });
+  }
+  const yMin = 0.7, yMax = 1.9;
+  const toY = (v) => h - pad - ((v - yMin) / (yMax - yMin)) * (h - pad * 2 - 40);
+
+  // baseline
+  ctx.strokeStyle = COLORS.rule;
+  ctx.setLineDash([3, 5]);
+  ctx.beginPath(); ctx.moveTo(pad, toY(1.0)); ctx.lineTo(w - pad, toY(1.0)); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = COLORS.dim; ctx.font = '12px JetBrains Mono, monospace';
+  ctx.fillText('baseline (resting ~1g)', pad, toY(1.0) - 8);
+
+  // waveform
+  ctx.strokeStyle = COLORS.forward;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const y = toY(p.y); i === 0 ? ctx.moveTo(p.x, y) : ctx.lineTo(p.x, y); });
+  ctx.stroke();
+
+  // find local maxima to mark as "candidate peaks"
+  for (let i = 2; i < pts.length - 2; i++) {
+    if (pts[i].y > pts[i - 1].y && pts[i].y > pts[i + 1].y && pts[i].y > 1.25) {
+      const age = (t * 1.4 - (i * 0.17)) % (2 * Math.PI);
+      const pulse = 0.5 + 0.5 * Math.sin(t * 4);
+      ctx.fillStyle = COLORS.backward;
+      ctx.beginPath();
+      ctx.arc(pts[i].x, toY(pts[i].y), 5 + pulse * 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // feature tiles sliding in
+  const feats = ['peak_mag', 'peak_prominence', 'gyro_mag_at_peak', 'interval_since_last'];
+  const tileY = h - pad + 2;
+  const tileW = (w - pad * 2 - 3 * 12) / 4;
+  feats.forEach((f, i) => {
+    const x = pad + i * (tileW + 12);
+    ctx.fillStyle = COLORS.bg;
+    ctx.strokeStyle = COLORS.rule;
+    roundRect(x, tileY - 26, tileW, 26, 6);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = COLORS.ink;
+    ctx.font = '11px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(f, x + tileW / 2, tileY - 9);
+    ctx.textAlign = 'left';
+  });
+}
+
+/* ---------------- Network diagram (shared by forward + backward scenes) ---------------- */
+const LAYER_SIZES = [4, 8, 4, 1];
+function layerPositions(w, h) {
+  const padX = 70, padY = 46;
+  const layerX = LAYER_SIZES.map((_, li) => padX + (li / (LAYER_SIZES.length - 1)) * (w - padX * 2));
+  return LAYER_SIZES.map((count, li) => {
+    const x = layerX[li];
+    const usableH = h - padY * 2;
+    return Array.from({ length: count }, (_, ni) => {
+      const y = count === 1 ? h / 2 : padY + (ni / (count - 1)) * usableH;
+      return { x, y };
+    });
+  });
+}
+
+function drawNetworkSkeleton(nodes) {
+  ctx.strokeStyle = COLORS.rule;
+  ctx.lineWidth = 1;
+  for (let li = 0; li < nodes.length - 1; li++) {
+    nodes[li].forEach((a) => {
+      nodes[li + 1].forEach((b) => {
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      });
+    });
+  }
+  nodes.forEach((layer) => {
+    layer.forEach((n) => {
+      ctx.fillStyle = COLORS.bg;
+      ctx.strokeStyle = COLORS.dim;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(n.x, n.y, 9, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    });
+  });
+}
+
+const LAYER_LABELS = ['input\n(4 features)', 'hidden 1\n(8, ReLU)', 'hidden 2\n(4, ReLU)', 'output\n(1, sigmoid)'];
+function drawLayerLabels(nodes, w, h) {
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '11px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  nodes.forEach((layer, li) => {
+    const x = layer[0].x;
+    LAYER_LABELS[li].split('\n').forEach((line, i) => {
+      ctx.fillText(line, x, h - 14 + i * 13);
+    });
+  });
+  ctx.textAlign = 'left';
+}
+
+/* ---------------- Scene 2: forward pass ---------------- */
+function sceneForward(t) {
+  const w = W(), h = H();
+  ctx.clearRect(0, 0, w, h);
+  const nodes = layerPositions(w, h);
+  drawNetworkSkeleton(nodes);
+
+  // animate a pulse of "signal" flowing left to right across all edges,
+  // segment by segment, looping every ~4.5s.
+  const cycle = (t * 0.45) % 1;
+  for (let li = 0; li < nodes.length - 1; li++) {
+    const segStart = li / (nodes.length - 1);
+    const segEnd = (li + 1) / (nodes.length - 1);
+    const local = (cycle - segStart) / (segEnd - segStart);
+    if (local < 0 || local > 1) continue;
+    const eased = easeInOut(Math.min(Math.max(local, 0), 1));
+    nodes[li].forEach((a) => {
+      nodes[li + 1].forEach((b) => {
+        const x = a.x + (b.x - a.x) * eased;
+        const y = a.y + (b.y - a.y) * eased;
+        ctx.fillStyle = COLORS.forward;
+        ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
+      });
+    });
+    // light up the destination layer once the pulse arrives
+    if (eased > 0.92) {
+      nodes[li + 1].forEach((n) => {
+        ctx.strokeStyle = COLORS.forward; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(n.x, n.y, 11, 0, Math.PI * 2); ctx.stroke();
+      });
+    }
+  }
+
+  drawLayerLabels(nodes, w, h);
+
+  // output readout
+  const out = nodes[3][0];
+  const prob = 0.5 + 0.42 * Math.sin(t * 0.45 * Math.PI * 2 - Math.PI / 2) * 0 + 0.91; // settle near 0.91
+  ctx.fillStyle = COLORS.good;
+  ctx.font = '13px JetBrains Mono, monospace';
+  ctx.fillText('P(step) = 0.91', out.x + 20, out.y - 4);
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillText('-> real step', out.x + 20, out.y + 12);
+
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '11px JetBrains Mono, monospace';
+  ctx.fillText('each neuron: y = ReLU( W . x + b )', 20, 22);
+}
+
+/* ---------------- Scene 3: the loss ---------------- */
+function sceneLoss(t) {
+  const w = W(), h = H();
+  ctx.clearRect(0, 0, w, h);
+
+  const cases = [
+    { label: 'a real step', truth: 1, pred: 0.91, color: COLORS.good },
+    { label: 'a pedal stroke', truth: 0, pred: 0.18, color: COLORS.good },
+    { label: 'a foot pivot (hard case)', truth: 0, pred: 0.62, color: COLORS.bad },
+  ];
+  const rowH = (h - 40) / cases.length;
+  cases.forEach((c, i) => {
+    const y = 20 + i * rowH + rowH / 2;
+    ctx.fillStyle = COLORS.ink;
+    ctx.font = '14px Inter, sans-serif';
+    ctx.fillText(c.label, 20, y - 18);
+
+    // bars: truth vs prediction
+    const barW = w - 260;
+    const barX = 20;
+    ctx.fillStyle = COLORS.rule;
+    roundRect(barX, y, barW, 10, 5); ctx.fill();
+    ctx.fillStyle = COLORS.dim;
+    roundRect(barX, y, barW * c.truth, 10, 5); ctx.fill();
+    ctx.fillStyle = COLORS.ink;
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillText('truth', barX, y - 2);
+
+    const predPulse = 0.5 + 0.5 * Math.sin(t * 2 + i);
+    ctx.fillStyle = c.color;
+    roundRect(barX, y + 18, barW * c.pred, 10, 5); ctx.fill();
+    ctx.fillStyle = COLORS.ink;
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillText('prediction', barX, y + 16);
+
+    const loss = -(c.truth * Math.log(c.pred + 1e-9) + (1 - c.truth) * Math.log(1 - c.pred + 1e-9));
+    ctx.fillStyle = c.color;
+    ctx.font = 'bold 16px JetBrains Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('loss ' + loss.toFixed(2), w - 20, y + 15);
+    ctx.textAlign = 'left';
+  });
+
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '11px JetBrains Mono, monospace';
+  ctx.fillText('loss = -[ y . log(pred) + (1-y) . log(1-pred) ]', 20, h - 10);
+}
+
+/* ---------------- Scene 4: backprop ---------------- */
+function sceneBackward(t) {
+  const w = W(), h = H();
+  ctx.clearRect(0, 0, w, h);
+  const nodes = layerPositions(w, h);
+  drawNetworkSkeleton(nodes);
+
+  const cycle = (t * 0.4) % 1;
+  const nLayers = nodes.length;
+  for (let li = nLayers - 1; li > 0; li--) {
+    const idxFromEnd = nLayers - 1 - li;
+    const segStart = idxFromEnd / (nLayers - 1);
+    const segEnd = (idxFromEnd + 1) / (nLayers - 1);
+    const local = (cycle - segStart) / (segEnd - segStart);
+    if (local < 0 || local > 1) continue;
+    const eased = easeInOut(Math.min(Math.max(local, 0), 1));
+    nodes[li].forEach((a) => {
+      nodes[li - 1].forEach((b) => {
+        const x = a.x + (b.x - a.x) * eased;
+        const y = a.y + (b.y - a.y) * eased;
+        ctx.fillStyle = COLORS.backward;
+        ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
+      });
+    });
+    if (eased > 0.92) {
+      nodes[li - 1].forEach((n) => {
+        ctx.strokeStyle = COLORS.backward; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(n.x, n.y, 11, 0, Math.PI * 2); ctx.stroke();
+      });
+    }
+  }
+
+  drawLayerLabels(nodes, w, h);
+
+  ctx.fillStyle = COLORS.backward;
+  ctx.font = '13px JetBrains Mono, monospace';
+  ctx.fillText('d(loss)/d(w) computed layer by layer, right to left', 20, 22);
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillText('chain rule: each layer only needs the gradient handed to it by the layer after it', 20, 40);
+}
+
+/* ---------------- Scene 5: the training loop ---------------- */
+function sceneTraining(t) {
+  const w = W(), h = H(), pad = 40;
+  ctx.clearRect(0, 0, w, h);
+
+  const n = 120;
+  const toX = (i) => pad + (i / (n - 1)) * (w - pad * 2);
+  const lossAt = (i) => 0.75 * Math.exp(-i / 28) + 0.07 + 0.015 * Math.sin(i * 0.6);
+  const accAt = (i) => 0.5 + 0.4 * (1 - Math.exp(-i / 30));
+
+  const reveal = Math.min(1, (t * 0.18));
+  const shown = Math.floor(n * easeInOut(reveal));
+
+  const lossTop = 30, lossBot = h * 0.55;
+  const accTop = h * 0.6, accBot = h - 30;
+
+  // loss curve
+  ctx.strokeStyle = COLORS.rule;
+  ctx.beginPath(); ctx.moveTo(pad, lossBot); ctx.lineTo(w - pad, lossBot); ctx.stroke();
+  ctx.fillStyle = COLORS.dim; ctx.font = '11px Inter, sans-serif';
+  ctx.fillText('training loss', pad, lossTop - 8);
+
+  ctx.strokeStyle = COLORS.backward;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (let i = 0; i < shown; i++) {
+    const x = toX(i), y = lossBot - lossAt(i) * (lossBot - lossTop) / 0.82;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // accuracy curve
+  ctx.strokeStyle = COLORS.rule;
+  ctx.beginPath(); ctx.moveTo(pad, accBot); ctx.lineTo(w - pad, accBot); ctx.stroke();
+  ctx.fillStyle = COLORS.dim;
+  ctx.fillText('cross-validation accuracy', pad, accTop - 8);
+
+  ctx.strokeStyle = COLORS.good;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for (let i = 0; i < shown; i++) {
+    const x = toX(i), y = accBot - accAt(i) * (accBot - accTop) / 0.9;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  if (shown > 2) {
+    const i = shown - 1;
+    ctx.fillStyle = COLORS.backward;
+    ctx.beginPath(); ctx.arc(toX(i), lossBot - lossAt(i) * (lossBot - lossTop) / 0.82, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = COLORS.good;
+    ctx.beginPath(); ctx.arc(toX(i), accBot - accAt(i) * (accBot - accTop) / 0.9, 4, 0, Math.PI * 2); ctx.fill();
+
+    ctx.font = 'bold 14px JetBrains Mono, monospace';
+    ctx.fillStyle = COLORS.good;
+    ctx.textAlign = 'right';
+    ctx.fillText((accAt(i) * 100).toFixed(0) + '%', w - pad, accTop - 8);
+    ctx.textAlign = 'left';
+  }
+
+  ctx.fillStyle = COLORS.dim;
+  ctx.font = '11px JetBrains Mono, monospace';
+  ctx.fillText('forward pass -> loss -> backprop -> nudge weights, repeated ~300 times', pad, h - 8);
+}
+
+/* ---------------- Scene 6: summary ---------------- */
+function sceneSummary(t) {
+  const w = W(), h = H();
+  ctx.clearRect(0, 0, w, h);
+
+  const stats = [
+    { label: 'architecture', value: '4 -> 8 -> 4 -> 1' },
+    { label: 'training examples', value: '363 candidate peaks' },
+    { label: 'cross-val accuracy', value: '~89-90%' },
+    { label: 'trained with', value: 'PyTorch (autograd)' },
+    { label: 'runs on-device with', value: 'plain numpy (no PyTorch)' },
+    { label: 'on-device retrain uses', value: 'hand-written backprop' },
+  ];
+  const cols = 2;
+  const cardW = (w - 20 * 3) / cols;
+  const cardH = 72;
+  const rows = Math.ceil(stats.length / cols);
+  const totalH = rows * cardH + (rows - 1) * 16;
+  const startY = (h - totalH) / 2;
+
+  stats.forEach((s, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const x = 20 + col * (cardW + 20);
+    const y = startY + row * (cardH + 16);
+    const reveal = Math.min(1, Math.max(0, t * 1.2 - i * 0.12));
+    ctx.globalAlpha = easeInOut(reveal);
+    ctx.fillStyle = COLORS.bg;
+    ctx.strokeStyle = COLORS.rule;
+    roundRect(x, y, cardW, cardH, 10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = COLORS.dim;
+    ctx.font = '11px Inter, sans-serif';
+    ctx.fillText(s.label, x + 14, y + 22);
+    ctx.fillStyle = COLORS.forward;
+    ctx.font = 'bold 15px JetBrains Mono, monospace';
+    ctx.fillText(s.value, x + 14, y + 46);
+    ctx.globalAlpha = 1;
+  });
+}
+
+/* ---------------- Scene registry ---------------- */
+const SCENES = [
+  { eyebrow: 'Scene 1 / 6 — Signal', title: 'Finding a candidate step', sub: 'A classic peak detector scans the live acceleration magnitude for local maxima tall enough to plausibly be a footstrike - this is the same idea any basic pedometer uses, and it’s easily fooled.', draw: sceneSignal },
+  { eyebrow: 'Scene 2 / 6 — Forward pass', title: 'The network makes a guess', sub: 'The 4 numbers describing that peak flow through two hidden layers (ReLU) to one output neuron (sigmoid): a probability between 0 and 1 that this peak was a real step.', draw: sceneForward },
+  { eyebrow: 'Scene 3 / 6 — Loss', title: 'How wrong was the guess?', sub: 'Binary cross-entropy compares the prediction to the true label - small when confident and correct, large when confidently wrong. A foot pivot that fools the net costs a big loss.', draw: sceneLoss },
+  { eyebrow: 'Scene 4 / 6 — Backpropagation', title: 'Blame flows backward', sub: 'The chain rule computes, layer by layer from output to input, exactly how much each individual weight contributed to the error - d(loss)/d(weight) for every single weight.', draw: sceneBackward },
+  { eyebrow: 'Scene 5 / 6 — Gradient descent', title: 'Nudge every weight, repeat', sub: 'Each weight shifts a small step against its own gradient. Do this forward-loss-backward-nudge cycle a few hundred times and the random starting weights become ones that actually separate steps from noise.', draw: sceneTraining },
+  { eyebrow: 'Scene 6 / 6 — Summary', title: 'What actually shipped', sub: 'Trained with real PyTorch and k-fold cross-validation on a computer; runs live on the Uno Q with nothing but numpy, since PyTorch itself is too heavy for this ARM board.', draw: sceneSummary },
+];
+
+let current = 0;
+let playing = false;
+let sceneStart = performance.now();
+let rafId = null;
+
+const eyebrowEl = document.getElementById('eyebrow');
+const titleEl = document.getElementById('title');
+const subEl = document.getElementById('sub');
+const stepLabelEl = document.getElementById('stepLabel');
+const dotsEl = document.getElementById('dots');
+const playBtn = document.getElementById('playBtn');
+
+SCENES.forEach((_, i) => {
+  const d = document.createElement('div');
+  d.className = 'dot' + (i === 0 ? ' active' : '');
+  d.onclick = () => goTo(i);
+  dotsEl.appendChild(d);
+});
+
+function goTo(i) {
+  current = (i + SCENES.length) % SCENES.length;
+  sceneStart = performance.now();
+  const s = SCENES[current];
+  eyebrowEl.textContent = s.eyebrow;
+  titleEl.textContent = s.title;
+  subEl.textContent = s.sub;
+  stepLabelEl.textContent = (current + 1) + ' / ' + SCENES.length;
+  [...dotsEl.children].forEach((d, idx) => d.classList.toggle('active', idx === current));
+}
+
+function loop(now) {
+  const t = (now - sceneStart) / 1000;
+  SCENES[current].draw(t, 1 / 60);
+  if (playing && t > 6.5) goTo(current + 1);
+  rafId = requestAnimationFrame(loop);
+}
+
+document.getElementById('prevBtn').onclick = () => goTo(current - 1);
+document.getElementById('nextBtn').onclick = () => goTo(current + 1);
+playBtn.onclick = () => {
+  playing = !playing;
+  playBtn.textContent = playing ? '⏸ Pause' : '▶ Play';
+};
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowRight') goTo(current + 1);
+  if (e.key === 'ArrowLeft') goTo(current - 1);
+});
+
+fit();
+goTo(0);
+rafId = requestAnimationFrame(loop);
+</script>
