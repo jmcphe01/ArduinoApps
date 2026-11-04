@@ -56,45 +56,56 @@ sigmoid) - so nothing about what runs live needs PyTorch or is a black box.
 
 ## How the neural net is working (in plain terms)
 
-StepNet takes 4 numbers describing one candidate peak - how tall it is, how
-much it stands out above the recent baseline, how much rotation the gyro saw
-at that moment, and how long since the last candidate - and passes them
-through two small hidden layers (8 neurons, then 4) before a single output
-neuron squashed to a number between 0 and 1 with a sigmoid function: the
-estimated probability that this peak was a real step. Each neuron just
-computes a weighted sum of its inputs plus a bias, then applies a simple
-nonlinear function (ReLU, which is 0 for negative inputs and passes positive
-ones through unchanged) - stacking a few of these is what lets the network
-learn a decision boundary more flexible than a single straight-line
-threshold, which is exactly where our old hand-tuned Model 1 struggled to
-tell pedaling from walking.
+StepNet takes four numbers describing one candidate peak - its height, how
+far it stands above the recent baseline, how much rotation the gyro saw at
+that instant, and how long since the last candidate - and runs them through
+two hidden layers of 8 and 4 neurons before a single output neuron. Each
+neuron computes a weighted sum: it multiplies every input it receives by its
+own learned weight, adds them all up along with one more learned number (the
+bias), and that single sum is the neuron's raw output. On its own that's
+just a linear combination, no more powerful than a weighted average, so
+every hidden neuron passes its sum through ReLU, which outputs the sum
+unchanged if it's positive and zero if it's negative. That one simple cutoff
+is what makes the network nonlinear - without it, stacking layers would
+collapse mathematically into one big linear equation, no more expressive
+than Model 1's single threshold. The final neuron uses sigmoid instead of
+ReLU, squeezing its output into a number between 0 and 1, which we read as
+"probability this peak is a real step."
 
-Training starts with random weights, so the network's first guesses are
-close to random. Backpropagation is how it improves: after a forward pass
-produces a prediction, we compare it to the true label (step or not-a-step)
-with a loss function (binary cross-entropy) that's small when the
-prediction is confident and correct, large when it's confidently wrong.
-Backprop then works backward through the network one layer at a time,
-using the chain rule from calculus to compute exactly how much each
-individual weight contributed to that error - literally "how much would the
-loss change if I nudged this one number slightly." Gradient descent then
-nudges every weight a small step in the direction that reduces the loss.
-PyTorch's `.backward()` call does this chain-rule bookkeeping automatically;
-our from-scratch numpy version (used for on-device retraining) writes out
-those same derivative formulas by hand, layer by layer, which is a good way
-to confirm we actually understand what autograd is doing under the hood
-rather than just trusting it.
+Right after creation, every weight and bias is a small random number, so the
+network's first guesses are essentially noise. Training is the process of
+correcting those numbers using labeled examples, and it has three parts.
+First, the forward pass above produces a prediction. Second, we score it
+with a loss function (binary cross-entropy) that returns a small number
+when the prediction matches the true label confidently and a large number
+when it doesn't. Third, backpropagation computes the gradient - for every
+single weight and bias in the network, a number that says "if I increased
+this one value by a tiny amount, the loss would change by roughly this
+much, in this direction." It gets those numbers by applying the chain rule
+from calculus starting at the output and moving backward: the output
+layer's gradient is cheap to compute directly from the loss, and each
+earlier layer's gradient is built from the gradient the layer after it
+already produced, which is why it's called backpropagation and not just
+"propagation." PyTorch's `.backward()` performs that entire chain-rule
+computation automatically; the from-scratch numpy version we wrote for
+on-device retraining does the identical arithmetic by hand, layer by layer,
+which is really the only way to be sure you understand what autograd is
+doing rather than trusting it as a black box.
 
-Repeating this thousands of times (forward pass, measure the error,
-backprop the blame to every weight, nudge them all slightly) is what turns
-those random starting weights into ones that actually separate real steps
-from false positives. We measure how well it generalizes with k-fold
-cross-validation rather than just training accuracy - with our current
-dataset, the network separates steps from non-steps correctly on data it
-wasn't trained on around 89-90% of the time, which is honest enough to
-quote in a writeup, and noticeably better than the simple threshold rule
-could do on its own, especially at telling pedaling and foot-pivoting apart
-from real footstrikes.
+Gradient descent is what actually uses those gradients: every weight gets
+nudged a small step in the opposite direction of its gradient, since the
+gradient points toward increasing loss and we want to decrease it. The size
+of that step is the learning rate - too large and the weights overshoot and
+bounce around; too small and training crawls. One update barely moves the
+needle, but repeating the full cycle (forward pass, compute loss,
+backpropagate, update every weight) several hundred times is what actually
+separates "random numbers" from "a network that distinguishes a footstep
+from a pedal stroke." The honest way to check whether that worked is k-fold
+cross-validation - training on most of the data and testing on a held-out
+slice it never saw, repeated across several different slices - rather than
+trusting accuracy on the same data it trained on, which a small network can
+simply memorize without learning anything general. By that more honest
+measure, ours lands around 89-90%.
 
 ## Using it
 
